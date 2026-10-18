@@ -45,6 +45,9 @@ endif()
 
 
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+# No C++20 modules here: don't scan for them (CMake 3.28+ would, and needs clang-scan-deps,
+# which some toolchains, e.g. FreeBSD's base clang, don't have).
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 

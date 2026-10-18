@@ -1,7 +1,9 @@
 #include "zarchive/zarchivereader.h"
 #include "zarchive/zarchivecommon.h"
 
+#include <cstring>
 #include <fstream>
+#include <streambuf>
 
 #include <zstd.h>
 #include <cassert>
@@ -14,6 +16,7 @@ static uint64_t _istream_getFileSize(std::istream& stream)
 
 static bool _istream_readBytes(std::istream& stream, uint64_t offset, void* buffer, uint32_t size)
 {
+	stream.clear(); // a short read earlier leaves the stream failed, which would fail the seek
 	stream.seekg(offset, std::ios_base::beg);
 	stream.read((char*)buffer, size);
 	return stream.gcount() == size;
@@ -33,6 +36,76 @@ ZArchiveReader* ZArchiveReader::OpenFromFile(const std::filesystem::path& path)
 		return nullptr;
 
 	return ZArchiveReader::OpenFromStream(std::move(file));
+}
+
+namespace
+{
+	// A read-only, seekable view of a memory buffer, optionally owning it.
+	class MemoryStreamBuf : public std::streambuf
+	{
+	public:
+		MemoryStreamBuf(const uint8_t* data, size_t size) { Set(data, size); }
+		explicit MemoryStreamBuf(std::vector<uint8_t>&& owned) : m_owned(std::move(owned)) { Set(m_owned.data(), m_owned.size()); }
+
+	protected:
+		pos_type seekoff(off_type off, std::ios_base::seekdir dir, std::ios_base::openmode which) override
+		{
+			if (!(which & std::ios_base::in))
+				return pos_type(off_type(-1));
+			off_type base = dir == std::ios_base::beg ? 0 : dir == std::ios_base::cur ? off_type(gptr() - eback()) : off_type(egptr() - eback());
+			return seekpos(pos_type(base + off), which);
+		}
+		pos_type seekpos(pos_type pos, std::ios_base::openmode which) override
+		{
+			const off_type p = off_type(pos);
+			if (!(which & std::ios_base::in) || p < 0 || p > off_type(egptr() - eback()))
+				return pos_type(off_type(-1));
+			setg(eback(), eback() + p, egptr());
+			return pos;
+		}
+		std::streamsize xsgetn(char* s, std::streamsize n) override
+		{
+			std::streamsize avail = egptr() - gptr();
+			if (n > avail)
+				n = avail;
+			if (n > 0)
+			{
+				memcpy(s, gptr(), (size_t)n);
+				setg(eback(), gptr() + n, egptr()); // not gbump: it takes an int
+			}
+			return n;
+		}
+
+	private:
+		void Set(const uint8_t* data, size_t size)
+		{
+			char* p = const_cast<char*>(reinterpret_cast<const char*>(data));
+			setg(p, p, p + size);
+		}
+		std::vector<uint8_t> m_owned;
+	};
+
+	class MemoryStream : public std::istream
+	{
+	public:
+		MemoryStream(const uint8_t* data, size_t size) : std::istream(nullptr), m_buf(data, size) { rdbuf(&m_buf); }
+		explicit MemoryStream(std::vector<uint8_t>&& owned) : std::istream(nullptr), m_buf(std::move(owned)) { rdbuf(&m_buf); }
+
+	private:
+		MemoryStreamBuf m_buf;
+	};
+}
+
+ZArchiveReader* ZArchiveReader::OpenFromMemory(const void* data, size_t size)
+{
+	if (!data)
+		return nullptr;
+	return OpenFromStream(std::make_unique<MemoryStream>(static_cast<const uint8_t*>(data), size));
+}
+
+ZArchiveReader* ZArchiveReader::OpenFromMemory(std::vector<uint8_t>&& data)
+{
+	return OpenFromStream(std::make_unique<MemoryStream>(std::move(data)));
 }
 
 ZArchiveReader* ZArchiveReader::OpenFromStream(std::unique_ptr<std::istream>&& stream)

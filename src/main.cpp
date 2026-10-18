@@ -8,16 +8,25 @@
 #include <optional>
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string_view>
 
 namespace fs = std::filesystem;
 
 void PrintHelp()
 {
 	puts("Usage:\n");
-	puts("zarchive.exe input_path [output_path]");
+	puts("zarchive.exe [options] input_path [output_path]");
 	puts("If input_path is a directory, then output_path will be the ZArchive output file path");
 	puts("If input_path is a ZArchive file path, then output_path will be the output directory");
 	puts("output_path is optional");
+	puts("");
+	puts("Options when packing:");
+	puts("  -l, --level N      zstd level 1..22 (default 6)");
+	puts("  -p, --precheck P   store blocks uncompressed when zstd's fastest level can't get them");
+	puts("                     below P% of their size (0 = off, the default; 95 suits game discs");
+	puts("                     that are already compressed)");
+	puts("  -t, --threads N    compression threads, 0 = all cores (default 1)");
 }
 
 bool ExtractFile(ZArchiveReader* reader, std::string_view srcPath, const fs::path& path)
@@ -135,7 +144,14 @@ void _pack_WriteOutputData(const void* data, size_t length, void* ctx)
 	packContext->currentOutputFile.write((const char*)data, length);
 }
 
-int Pack(fs::path inputDirectory, fs::path outputFile)
+struct PackOptions
+{
+	int level = 6;
+	double precheck = 0.0;
+	unsigned threads = 1;
+};
+
+int Pack(fs::path inputDirectory, fs::path outputFile, const PackOptions& options)
 {
 	std::vector<uint8_t> buffer;
 	buffer.resize(64 * 1024);
@@ -144,6 +160,9 @@ int Pack(fs::path inputDirectory, fs::path outputFile)
 	PackContext packContext;
 	packContext.outputFilePath = outputFile;
 	ZArchiveWriter zWriter(_pack_NewOutputFile, _pack_WriteOutputData, &packContext);
+	zWriter.SetCompressionLevel(options.level);
+	zWriter.SetPrecheck(options.precheck);
+	zWriter.SetThreads(options.threads);
 	if (packContext.hasError)
 		return -16;
 	for (auto const& dirEntry : fs::recursive_directory_iterator(inputDirectory))
@@ -187,6 +206,10 @@ int Pack(fs::path inputDirectory, fs::path outputFile)
 			return -16;
 	}
 	zWriter.Finalize();
+	ZArchiveWriter::Stats st = zWriter.GetStats();
+	printf("%llu bytes -> %llu bytes; %llu of %llu blocks stored uncompressed (%llu by the pre-check)\n",
+		(unsigned long long)st.inputBytes, (unsigned long long)st.outputBytes, (unsigned long long)st.storedBlocks,
+		(unsigned long long)st.blocks, (unsigned long long)st.precheckSkipped);
 	return 0;
 }
 
@@ -199,8 +222,30 @@ int main(int argc, char* argv[])
 	}
 	std::optional<std::string> strInput;
 	std::optional<std::string> strOutput;
+	PackOptions packOptions;
 	for (int i = 1; i < argc; i++)
 	{
+		std::string_view arg = argv[i];
+		if ((arg == "-l" || arg == "--level") && i + 1 < argc)
+		{
+			packOptions.level = atoi(argv[++i]);
+			continue;
+		}
+		if ((arg == "-p" || arg == "--precheck") && i + 1 < argc)
+		{
+			packOptions.precheck = atof(argv[++i]);
+			continue;
+		}
+		if ((arg == "-t" || arg == "--threads") && i + 1 < argc)
+		{
+			packOptions.threads = (unsigned)atoi(argv[++i]);
+			continue;
+		}
+		if (arg == "-h" || arg == "--help")
+		{
+			PrintHelp();
+			return 0;
+		}
 		if (strInput)
 		{
 			if (strOutput)
@@ -270,7 +315,7 @@ int main(int argc, char* argv[])
 				puts("The output file already exists");
 				return -11;
 			}
-			int r = Pack(p, outputFile);
+			int r = Pack(p, outputFile, packOptions);
 			if (r != 0)
 			{
 				// delete incomplete output file

@@ -35,6 +35,27 @@ int main()
 
 For a more detailed example see [main.cpp](/src/main.cpp)
 
+## Writer settings (this fork)
+Archives written with these settings are ordinary ZArchives that every reader opens: they only change how the writer stores each block.
+
+```c++
+ZArchiveWriter writer(cbNewFile, cbWrite, &ctx);
+writer.SetCompressionLevel(22); // zstd 1..22, default 6 (as upstream)
+writer.SetPrecheck(95.0);       // store blocks zstd's fastest level can't get below 95% as they are
+writer.SetThreads(0);           // compress blocks on all cores; the output is the same for any count
+writer.MakeDir("DLC", true);
+writer.AddFile("Game.chd", chdData, chdSize, /*compress=*/false); // already compressed: store it
+writer.AddFile("DLC/data.bin", data, size);                       // from memory
+writer.Finalize();
+ZArchiveWriter::Stats stats = writer.GetStats();
+```
+
+- **Pre-check**: every block is first compressed at zstd's fastest level. Blocks that don't shrink below the given percentage are stored uncompressed, without spending time on the configured level. Already-compressed data (CSO/CHD/RVZ discs, video, archives) costs almost nothing and reads back without decompression.
+- **Store-only files**: `StartNewFile(path, false)` / `AddFile(..., false)` store a file's blocks uncompressed. A block shared with a compressible neighbour is still compressed.
+- **Reading from memory**: `ZArchiveReader::OpenFromMemory(data, size)` (no copy) or `OpenFromMemory(std::vector<uint8_t>&&)`.
+- **Tool**: `zarchive -l 22 -p 95 -t 0 folder out.zar`.
+- **CMake**: `ZARCHIVE_ZSTD_TARGET` links an existing zstd target instead of `find_package(zstd)`; `ZARCHIVE_BUILD_TOOL`, `ZARCHIVE_BUILD_TESTS` and `ZARCHIVE_INSTALL` default to on only when ZArchive is the top-level project.
+
 ## Limitations
 - Not designed for adding, removing or modifying files after the archive has been created
 

@@ -1,10 +1,17 @@
-﻿cmake_minimum_required (VERSION 3.15)
+﻿cmake_minimum_required (VERSION 3.21) # PROJECT_IS_TOP_LEVEL
 
 project("ZArchive"
     VERSION "0.1.3"
     DESCRIPTION "Library for creating and reading zstd-compressed file archives"
     HOMEPAGE_URL "https://github.com/Exzap/ZArchive"
 )
+
+option(ZARCHIVE_BUILD_TOOL "Build the zarchive command line tool" ${PROJECT_IS_TOP_LEVEL})
+option(ZARCHIVE_BUILD_TESTS "Build the round-trip test" ${PROJECT_IS_TOP_LEVEL})
+option(ZARCHIVE_INSTALL "Install the library, headers and tool" ${PROJECT_IS_TOP_LEVEL})
+# A program that already builds zstd (e.g. ISOPackager through CHDmodern) passes its target here
+# instead of having one found on the system.
+set(ZARCHIVE_ZSTD_TARGET "" CACHE STRING "Existing zstd target to link instead of find_package(zstd)")
 
 if (WIN32)
     option(BUILD_STATIC_TOOL "Build the standalone executable statically" ON)
@@ -54,19 +61,40 @@ target_include_directories(zarchive
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
 )
 
-find_package(zstd MODULE REQUIRED) # MODULE because zstd::zstd is not defined upstream
-target_link_libraries(zarchive PRIVATE zstd::zstd ${STATIC_TOOL_FLAG})
+find_package(Threads REQUIRED)
+if (ZARCHIVE_ZSTD_TARGET)
+    target_link_libraries(zarchive PRIVATE ${ZARCHIVE_ZSTD_TARGET} Threads::Threads)
+else()
+    find_package(zstd MODULE REQUIRED) # MODULE because zstd::zstd is not defined upstream
+    target_link_libraries(zarchive PRIVATE zstd::zstd Threads::Threads ${STATIC_TOOL_FLAG})
+endif()
 
 # standalone executable
-add_executable (zarchiveTool src/main.cpp)
-set_property(TARGET zarchiveTool PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-set_target_properties(zarchiveTool PROPERTIES OUTPUT_NAME "zarchive")
-target_link_libraries(zarchiveTool PRIVATE zarchive ${STATIC_TOOL_FLAG})
+if (ZARCHIVE_BUILD_TOOL)
+    add_executable (zarchiveTool src/main.cpp)
+    set_property(TARGET zarchiveTool PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set_target_properties(zarchiveTool PROPERTIES OUTPUT_NAME "zarchive")
+    target_link_libraries(zarchiveTool PRIVATE zarchive ${STATIC_TOOL_FLAG})
+endif()
+
+if (ZARCHIVE_BUILD_TESTS)
+    enable_testing()
+    add_executable(zarchive_roundtrip tests/roundtrip.cpp)
+    set_property(TARGET zarchive_roundtrip PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_link_libraries(zarchive_roundtrip PRIVATE zarchive)
+    add_test(NAME roundtrip COMMAND zarchive_roundtrip)
+endif()
+
+if (NOT ZARCHIVE_INSTALL)
+    return()
+endif()
 
 # install
 install(DIRECTORY include/zarchive/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/zarchive" FILES_MATCHING PATTERN "zarchive*.h")
 install(TARGETS zarchive)
-install(TARGETS zarchiveTool)
+if (ZARCHIVE_BUILD_TOOL)
+    install(TARGETS zarchiveTool)
+endif()
 
 # pkg-config
 include(JoinPaths) # can be replaced by cmake_path(APPEND) in CMake 3.20

@@ -11,8 +11,9 @@
 
 #include <cassert>
 #include <algorithm>
+#include <cstdlib>
 
-ZArchiveWriter::ZArchiveWriter(CB_NewOutputFile cbNewOutputFile, CB_WriteOutputData cbWriteOutputData, void* ctx) : m_cbCtx(ctx), m_cbNewOutputFile(cbNewOutputFile), m_cbWriteOutputData(cbWriteOutputData)
+ZArchiveWriter::ZArchiveWriter(CB_NewOutputFile cbNewOutputFile, CB_WriteOutputData cbWriteOutputData, void* ctx) : m_cbNewOutputFile(cbNewOutputFile), m_cbWriteOutputData(cbWriteOutputData), m_cbCtx(ctx)
 {
 	cbNewOutputFile(-1, ctx);
 	m_mainShaCtx = (struct Sha_256*)malloc(sizeof(struct Sha_256));
@@ -21,6 +22,7 @@ ZArchiveWriter::ZArchiveWriter(CB_NewOutputFile cbNewOutputFile, CB_WriteOutputD
 
 ZArchiveWriter::~ZArchiveWriter()
 {
+	StopWorkers();
 	free(m_mainShaCtx);
 }
 
@@ -55,7 +57,13 @@ ZArchiveWriter::PathNode* ZArchiveWriter::FindSubnodeByName(ZArchiveWriter::Path
 
 bool ZArchiveWriter::StartNewFile(const char* path)
 {
+	return StartNewFile(path, true);
+}
+
+bool ZArchiveWriter::StartNewFile(const char* path, bool compress)
+{
 	m_currentFileNode = nullptr;
+	m_currentFileCompress = compress;
 	std::string_view pathParser = path;
 	std::string_view filename;
 	_ZARCHIVE::SplitFilenameFromPath(pathParser, filename);
@@ -124,6 +132,7 @@ void ZArchiveWriter::OutputData(const void* data, size_t length)
 {
 	m_cbWriteOutputData(data, length, m_cbCtx);
 	m_currentCompressedWriteIndex += length;
+	m_stats.outputBytes += length;
 	// hash the data
 	if (m_mainShaCtx)
 		sha_256_write(m_mainShaCtx, data, length);
@@ -134,34 +143,242 @@ uint64_t ZArchiveWriter::GetCurrentOutputOffset() const
 	return m_currentCompressedWriteIndex;
 }
 
-void ZArchiveWriter::StoreBlock(const uint8_t* uncompressedData)
+// ---- Settings ---------------------------------------------------------------------------------
+
+void ZArchiveWriter::SetCompressionLevel(int level)
 {
-	// compress and store
-	uint64_t compressedWriteOffset = GetCurrentOutputOffset();
-	m_compressionBuffer.resize(ZSTD_compressBound(_ZARCHIVE::COMPRESSED_BLOCK_SIZE));
-	size_t outputSize = ZSTD_compress(m_compressionBuffer.data(), m_compressionBuffer.size(), uncompressedData, _ZARCHIVE::COMPRESSED_BLOCK_SIZE, 6);
-	assert(outputSize >= 0);
-	if (outputSize >= _ZARCHIVE::COMPRESSED_BLOCK_SIZE)
+	if (level < ZSTD_minCLevel())
+		level = ZSTD_minCLevel();
+	if (level > ZSTD_maxCLevel())
+		level = ZSTD_maxCLevel();
+	if (level == 0)
+		level = ZSTD_CLEVEL_DEFAULT; // zstd reads 0 as "default"; say which
+	m_compressionLevel = level;
+}
+
+void ZArchiveWriter::SetPrecheck(double percent)
+{
+	if (!(percent > 0.0))
+		percent = 0.0;
+	if (percent > 100.0)
+		percent = 100.0;
+	m_precheckPercent = percent;
+}
+
+void ZArchiveWriter::SetThreads(unsigned threads)
+{
+	if (m_started)
+		return; // too late, keep what the blocks so far were batched with
+	if (threads == 0)
+		threads = std::max(1u, std::thread::hardware_concurrency());
+	m_threads = std::min(threads, 256u);
+}
+
+ZArchiveWriter::Stats ZArchiveWriter::GetStats() const
+{
+	return m_stats;
+}
+
+// ---- Block compression ------------------------------------------------------------------------
+
+struct ZArchiveWriter::Compressor
+{
+	ZSTD_CCtx* cctx = ZSTD_createCCtx();
+	std::vector<uint8_t> trial; // the pre-check's output
+	~Compressor() { ZSTD_freeCCtx(cctx); }
+};
+
+void ZArchiveWriter::CompressBlock(Compressor& c, BlockJob& job) const
+{
+	const size_t blockSize = _ZARCHIVE::COMPRESSED_BLOCK_SIZE;
+	job.stored = true;
+	job.precheckSkipped = false;
+	job.outputSize = blockSize;
+	if (!job.compress)
+		return;
+	const size_t bound = ZSTD_compressBound(blockSize);
+	if (job.output.size() < bound)
+		job.output.resize(bound);
+	if (m_precheckPercent > 0.0)
 	{
-		// store block uncompressed if it is equal or larger than the input after compression
-		outputSize = _ZARCHIVE::COMPRESSED_BLOCK_SIZE;
-		OutputData(uncompressedData, _ZARCHIVE::COMPRESSED_BLOCK_SIZE);
+		// The fast trial. Blocks it can't shrink enough are stored as they are.
+		const int fastLevel = std::min(1, m_compressionLevel);
+		size_t trialSize = ZSTD_compressCCtx(c.cctx, job.output.data(), job.output.size(), job.input.data(), blockSize, fastLevel);
+		if (ZSTD_isError(trialSize) || (double)trialSize > (double)blockSize * m_precheckPercent / 100.0)
+		{
+			job.precheckSkipped = true;
+			return;
+		}
+		if (m_compressionLevel <= fastLevel)
+		{
+			job.stored = false;
+			job.outputSize = trialSize;
+			return;
+		}
 	}
-	else
-	{
-		OutputData(m_compressionBuffer.data(), outputSize);
-	}
+	size_t size = ZSTD_compressCCtx(c.cctx, job.output.data(), job.output.size(), job.input.data(), blockSize, m_compressionLevel);
+	// store the block uncompressed if it is equal or larger than the input after compression
+	if (ZSTD_isError(size) || size >= blockSize)
+		return;
+	job.stored = false;
+	job.outputSize = size;
+}
+
+void ZArchiveWriter::WriteBlock(const uint8_t* data, size_t size)
+{
 	// add offset translation record
+	uint64_t compressedWriteOffset = GetCurrentOutputOffset();
+	OutputData(data, size);
 	if ((m_numWrittenOffsetRecords % _ZARCHIVE::ENTRIES_PER_OFFSETRECORD) == 0)
 		m_compressionOffsetRecord.emplace_back().baseOffset = compressedWriteOffset;
-	m_compressionOffsetRecord.back().size[m_numWrittenOffsetRecords % _ZARCHIVE::ENTRIES_PER_OFFSETRECORD] = (uint16_t)outputSize - 1;
+	m_compressionOffsetRecord.back().size[m_numWrittenOffsetRecords % _ZARCHIVE::ENTRIES_PER_OFFSETRECORD] = (uint16_t)(size - 1);
 	m_numWrittenOffsetRecords++;
 }
+
+void ZArchiveWriter::QueueBlock(const uint8_t* uncompressedData, bool compress)
+{
+	if (!m_started)
+	{
+		m_started = true;
+		if (m_threads > 1)
+			StartWorkers();
+		else
+			m_mainCompressor = std::make_unique<Compressor>();
+	}
+	auto account = [&](const BlockJob& job) {
+		m_stats.blocks++;
+		if (job.stored)
+		{
+			m_stats.storedBlocks++;
+			if (!job.compress)
+				m_stats.storeOnlyBlocks++;
+			if (job.precheckSkipped)
+				m_stats.precheckSkipped++;
+		}
+	};
+	if (m_threads <= 1)
+	{
+		BlockJob& job = m_singleJob;
+		job.input.assign(uncompressedData, uncompressedData + _ZARCHIVE::COMPRESSED_BLOCK_SIZE);
+		job.compress = compress;
+		CompressBlock(*m_mainCompressor, job);
+		WriteBlock(job.stored ? job.input.data() : job.output.data(), job.outputSize);
+		account(job);
+		return;
+	}
+	BlockJob& job = m_batch[m_batchUsed++];
+	job.input.assign(uncompressedData, uncompressedData + _ZARCHIVE::COMPRESSED_BLOCK_SIZE);
+	job.compress = compress;
+	if (m_batchUsed == m_batch.size())
+		FlushBatch();
+}
+
+void ZArchiveWriter::FlushBatch()
+{
+	if (m_batchUsed == 0)
+		return;
+	{
+		std::lock_guard<std::mutex> g(m_workMutex);
+		m_nextJob = 0;
+		m_jobsDone = 0;
+		m_runCount = m_batchUsed;
+		m_workGeneration++;
+	}
+	m_workCv.notify_all();
+	RunBatchJobs(); // the calling thread helps
+	{
+		std::unique_lock<std::mutex> lock(m_workMutex);
+		m_doneCv.wait(lock, [&] { return m_jobsDone >= m_runCount && m_workersBusy == 0; });
+		m_runCount = 0; // a worker waking up late finds nothing to do
+	}
+	// write in order
+	for (size_t i = 0; i < m_batchUsed; i++)
+	{
+		BlockJob& job = m_batch[i];
+		WriteBlock(job.stored ? job.input.data() : job.output.data(), job.outputSize);
+		m_stats.blocks++;
+		if (job.stored)
+		{
+			m_stats.storedBlocks++;
+			if (!job.compress)
+				m_stats.storeOnlyBlocks++;
+			if (job.precheckSkipped)
+				m_stats.precheckSkipped++;
+		}
+	}
+	m_batchUsed = 0;
+}
+
+void ZArchiveWriter::RunBatchJobs()
+{
+	thread_local std::unique_ptr<Compressor> compressor;
+	if (!compressor)
+		compressor = std::make_unique<Compressor>();
+	size_t done = 0;
+	for (;;)
+	{
+		size_t i = m_nextJob.fetch_add(1);
+		if (i >= m_runCount.load())
+			break;
+		CompressBlock(*compressor, m_batch[i]);
+		done++;
+	}
+	if (done)
+	{
+		std::lock_guard<std::mutex> g(m_workMutex);
+		m_jobsDone += done;
+	}
+	m_doneCv.notify_all();
+}
+
+void ZArchiveWriter::StartWorkers()
+{
+	// A few blocks per thread per batch keeps every core busy without holding much memory
+	// (64KiB in + ~64KiB out per block).
+	m_batch.resize((size_t)m_threads * 8);
+	for (unsigned i = 0; i + 1 < m_threads; i++)
+		m_workers.emplace_back([this] { WorkerMain(); });
+}
+
+void ZArchiveWriter::StopWorkers()
+{
+	{
+		std::lock_guard<std::mutex> g(m_workMutex);
+		m_stopWorkers = true;
+	}
+	m_workCv.notify_all();
+	for (std::thread& t : m_workers)
+		t.join();
+	m_workers.clear();
+}
+
+void ZArchiveWriter::WorkerMain()
+{
+	uint64_t seen = 0;
+	std::unique_lock<std::mutex> lock(m_workMutex);
+	for (;;)
+	{
+		m_workCv.wait(lock, [&] { return m_stopWorkers || m_workGeneration != seen; });
+		if (m_stopWorkers)
+			return;
+		seen = m_workGeneration;
+		m_workersBusy++;
+		lock.unlock();
+		RunBatchJobs();
+		lock.lock();
+		m_workersBusy--;
+		m_doneCv.notify_all();
+	}
+}
+
+// ---- Appending --------------------------------------------------------------------------------
 
 void ZArchiveWriter::AppendData(const void* data, size_t size)
 {
 	size_t dataSize = size;
 	const uint8_t* input = (const uint8_t*)data;
+	// The padding Finalize adds has no file: it never makes a block compressible on its own.
+	const bool compress = m_currentFileNode != nullptr && m_currentFileCompress;
 	while (size > 0)
 	{
 		size_t bytesToCopy = _ZARCHIVE::COMPRESSED_BLOCK_SIZE - m_currentWriteBuffer.size();
@@ -170,23 +387,36 @@ void ZArchiveWriter::AppendData(const void* data, size_t size)
 		if (bytesToCopy == _ZARCHIVE::COMPRESSED_BLOCK_SIZE)
 		{
 			// if incoming data is block-aligned we can store it directly without memcpy to temporary buffer
-			StoreBlock(input);
+			QueueBlock(input, compress);
 			input += bytesToCopy;
 			size -= bytesToCopy;
 			continue;
 		}
 		m_currentWriteBuffer.insert(m_currentWriteBuffer.end(), input, input + bytesToCopy);
+		m_currentBlockCompress |= compress;
 		input += bytesToCopy;
 		size -= bytesToCopy;
 		if (m_currentWriteBuffer.size() == _ZARCHIVE::COMPRESSED_BLOCK_SIZE)
 		{
-			StoreBlock(m_currentWriteBuffer.data());
+			QueueBlock(m_currentWriteBuffer.data(), m_currentBlockCompress);
 			m_currentWriteBuffer.clear();
+			m_currentBlockCompress = false;
 		}
 	}
 	if (m_currentFileNode)
+	{
 		m_currentFileNode->fileSize += dataSize;
+		m_stats.inputBytes += dataSize;
+	}
 	m_currentInputOffset += dataSize;
+}
+
+bool ZArchiveWriter::AddFile(const char* path, const void* data, size_t size, bool compress)
+{
+	if (!StartNewFile(path, compress))
+		return false;
+	AppendData(data, size);
+	return true;
 }
 
 void ZArchiveWriter::Finalize()
@@ -199,6 +429,8 @@ void ZArchiveWriter::Finalize()
 		padBuffer.resize(_ZARCHIVE::COMPRESSED_BLOCK_SIZE - m_currentWriteBuffer.size());
 		AppendData(padBuffer.data(), padBuffer.size());
 	}
+	FlushBatch();
+	StopWorkers();
 	m_footer.sectionCompressedData.offset = 0;
 	m_footer.sectionCompressedData.size = GetCurrentOutputOffset();
 	// pad to 8 byte

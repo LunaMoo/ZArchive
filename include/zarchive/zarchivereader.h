@@ -29,6 +29,10 @@ public:
 
 	static ZArchiveReader* OpenFromFile(const std::filesystem::path& path);
 	static ZArchiveReader* OpenFromStream(std::unique_ptr<std::istream>&& stream);
+	// An archive already in memory. The first form doesn't copy: data must stay valid (and unchanged)
+	// until the reader is deleted. The second one keeps the buffer itself.
+	static ZArchiveReader* OpenFromMemory(const void* data, size_t size);
+	static ZArchiveReader* OpenFromMemory(std::vector<uint8_t>&& data);
 
 	~ZArchiveReader();
 

@@ -1,4 +1,4 @@
-﻿cmake_minimum_required (VERSION 3.21) # PROJECT_IS_TOP_LEVEL
+﻿cmake_minimum_required (VERSION 3.15)
 
 project("ZArchive"
     VERSION "0.1.3"
@@ -6,9 +6,14 @@ project("ZArchive"
     HOMEPAGE_URL "https://github.com/Exzap/ZArchive"
 )
 
-option(ZARCHIVE_BUILD_TOOL "Build the zarchive command line tool" ${PROJECT_IS_TOP_LEVEL})
-option(ZARCHIVE_BUILD_TESTS "Build the round-trip test" ${PROJECT_IS_TOP_LEVEL})
-option(ZARCHIVE_INSTALL "Install the library, headers and tool" ${PROJECT_IS_TOP_LEVEL})
+if (CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR) # PROJECT_IS_TOP_LEVEL needs CMake 3.21
+    set(ZARCHIVE_TOP_LEVEL ON)
+else()
+    set(ZARCHIVE_TOP_LEVEL OFF)
+endif()
+option(ZARCHIVE_BUILD_TOOL "Build the zarchive command line tool" ${ZARCHIVE_TOP_LEVEL})
+option(ZARCHIVE_BUILD_TESTS "Build the round-trip test" ${ZARCHIVE_TOP_LEVEL})
+option(ZARCHIVE_INSTALL "Install the library, headers and tool" ${ZARCHIVE_TOP_LEVEL})
 # A program that already builds zstd (e.g. ISOPackager through CHDmodern) passes its target here
 # instead of having one found on the system.
 set(ZARCHIVE_ZSTD_TARGET "" CACHE STRING "Existing zstd target to link instead of find_package(zstd)")

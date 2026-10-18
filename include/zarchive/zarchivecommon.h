@@ -299,7 +299,7 @@ namespace _ZARCHIVE
 
 	static_assert(sizeof(Footer) == (16 * 6 + 32 + 8 + 4 + 4));
 
-	static bool GetNextPathNode(std::string_view& pathParser, std::string_view& node)
+	inline bool GetNextPathNode(std::string_view& pathParser, std::string_view& node)
 	{
 		// skip leading slashes
 		while (!pathParser.empty() && (pathParser.front() == '/' || pathParser.front() == '\\'))
@@ -318,7 +318,7 @@ namespace _ZARCHIVE
 		return true;
 	}
 
-	static void SplitFilenameFromPath(std::string_view& pathInOut, std::string_view& filename)
+	inline void SplitFilenameFromPath(std::string_view& pathInOut, std::string_view& filename)
 	{
 		if (pathInOut.empty())
 		{
@@ -343,7 +343,7 @@ namespace _ZARCHIVE
 		pathInOut.remove_suffix(pathInOut.size() - index);
 	}
 
-	static bool CompareNodeNameBool(std::string_view n1, std::string_view n2)
+	inline bool CompareNodeNameBool(std::string_view n1, std::string_view n2)
 	{
 		if (n1.size() != n2.size())
 			return false;
@@ -361,7 +361,7 @@ namespace _ZARCHIVE
 		return true;
 	}
 
-	static int CompareNodeName(std::string_view n1, std::string_view n2)
+	inline int CompareNodeName(std::string_view n1, std::string_view n2)
 	{
 		for (size_t i = 0; i < std::min(n1.size(), n2.size()); i++)
 		{

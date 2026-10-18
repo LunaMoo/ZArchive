@@ -15,6 +15,7 @@ namespace fs = std::filesystem;
 
 void PrintHelp()
 {
+	puts("zarchive " ZARCHIVE_VERSION "\n");
 	puts("Usage:\n");
 	puts("zarchive.exe [options] input_path [output_path]");
 	puts("If input_path is a directory, then output_path will be the ZArchive output file path");

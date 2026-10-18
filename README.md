@@ -54,6 +54,7 @@ ZArchiveWriter::Stats stats = writer.GetStats();
 - **Store-only files**: `StartNewFile(path, false)` / `AddFile(..., false)` store a file's blocks uncompressed. A block shared with a compressible neighbour is still compressed.
 - **Reading from memory**: `ZArchiveReader::OpenFromMemory(data, size)` (no copy) or `OpenFromMemory(std::vector<uint8_t>&&)`.
 - **Tool**: `zarchive -l 22 -p 95 -t 0 folder out.zar`.
+- **Version**: `ZARCHIVE_VERSION` ("0.2.0") and `ZARCHIVE_VERSION_MAJOR/MINOR/PATCH` in `zarchivecommon.h`.
 - **CMake**: `ZARCHIVE_ZSTD_TARGET` links an existing zstd target instead of `find_package(zstd)`; `ZARCHIVE_BUILD_TOOL`, `ZARCHIVE_BUILD_TESTS` and `ZARCHIVE_INSTALL` default to on only when ZArchive is the top-level project.
 
 ## Limitations

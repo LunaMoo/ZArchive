@@ -1,7 +1,13 @@
-﻿cmake_minimum_required (VERSION 3.15)
+﻿cmake_minimum_required (VERSION 3.15...3.28)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/zarchive/zarchivecommon.h" ZARCHIVE_VERSION_DEFINES
+    REGEX "^#define ZARCHIVE_VERSION_(MAJOR|MINOR|PATCH) [0-9]+$")
+foreach(part MAJOR MINOR PATCH)
+    string(REGEX REPLACE ".*#define ZARCHIVE_VERSION_${part} ([0-9]+).*" "\\1" ZARCHIVE_V_${part} "${ZARCHIVE_VERSION_DEFINES}")
+endforeach()
 
 project("ZArchive"
-    VERSION "0.1.3"
+    VERSION "${ZARCHIVE_V_MAJOR}.${ZARCHIVE_V_MINOR}.${ZARCHIVE_V_PATCH}"
     DESCRIPTION "Library for creating and reading zstd-compressed file archives"
     HOMEPAGE_URL "https://github.com/Exzap/ZArchive"
 )

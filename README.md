@@ -52,9 +52,10 @@ ZArchiveWriter::Stats stats = writer.GetStats();
 
 - **Pre-check**: every block is first compressed at zstd's fastest level. Blocks that don't shrink below the given percentage are stored uncompressed, without spending time on the configured level. Already-compressed data (CSO/CHD/RVZ discs, video, archives) costs almost nothing and reads back without decompression.
 - **Store-only files**: `StartNewFile(path, false)` / `AddFile(..., false)` store a file's blocks uncompressed. A block shared with a compressible neighbour is still compressed.
+- **Integrity check**: `reader->VerifyIntegrity(progress)` reads the whole archive and checks the SHA-256 in its footer (every writer stores it; no reader checked it until now).
 - **Reading from memory**: `ZArchiveReader::OpenFromMemory(data, size)` (no copy) or `OpenFromMemory(std::vector<uint8_t>&&)`.
 - **Tool**: `zarchive -l 22 -p 95 -t 0 folder out.zar`.
-- **Version**: `ZARCHIVE_VERSION` ("0.2.0") and `ZARCHIVE_VERSION_MAJOR/MINOR/PATCH` in `zarchivecommon.h`.
+- **Version**: `ZARCHIVE_VERSION` ("0.3.0") and `ZARCHIVE_VERSION_MAJOR/MINOR/PATCH` in `zarchivecommon.h`.
 - **CMake**: `ZARCHIVE_ZSTD_TARGET` links an existing zstd target instead of `find_package(zstd)`; `ZARCHIVE_BUILD_TOOL`, `ZARCHIVE_BUILD_TESTS` and `ZARCHIVE_INSTALL` default to on only when ZArchive is the top-level project.
 
 ## Limitations

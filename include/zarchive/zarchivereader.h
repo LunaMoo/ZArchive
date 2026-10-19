@@ -8,6 +8,7 @@
 #include <mutex>
 
 #include <filesystem>
+#include <functional>
 #include <istream>
 
 #include "zarchivecommon.h"
@@ -47,6 +48,12 @@ public:
 	// file operations
 	uint64_t GetFileSize(ZArchiveNodeHandle nodeHandle);
 	uint64_t ReadFromFile(ZArchiveNodeHandle nodeHandle, uint64_t offset, uint64_t length, void* buffer);
+
+	// Reads the whole archive and checks the SHA-256 its footer holds (the writer hashes every
+	// byte it wrote, with the footer's hash field zeroed). progress (optional) gets the bytes done
+	// and the total, and returning false from it stops the check (VerifyIntegrity then returns
+	// false too). Reads go through the same stream as the other calls, under the same lock.
+	bool VerifyIntegrity(const std::function<bool(uint64_t done, uint64_t total)>& progress = nullptr);
 
 private:
 	struct CacheBlock

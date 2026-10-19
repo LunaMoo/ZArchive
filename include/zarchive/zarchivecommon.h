@@ -2,9 +2,9 @@
 
 // The library's version (this fork: LunaMoo/ZArchive). CMake reads it from here.
 #define ZARCHIVE_VERSION_MAJOR 0
-#define ZARCHIVE_VERSION_MINOR 2
+#define ZARCHIVE_VERSION_MINOR 3
 #define ZARCHIVE_VERSION_PATCH 0
-#define ZARCHIVE_VERSION "0.2.0"
+#define ZARCHIVE_VERSION "0.3.0"
 
 #include <string>
 #include <string_view>

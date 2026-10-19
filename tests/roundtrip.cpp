@@ -144,7 +144,19 @@ namespace
 			}
 		}
 		CHECK(r->LookUp("DLC/ULUS10000-DLC1", false, true) != ZARCHIVE_INVALID_NODE, "%s: folder", what);
+		uint64_t lastDone = 0;
+		CHECK(r->VerifyIntegrity([&](uint64_t done, uint64_t total) { lastDone = done; return done <= total; }), "%s: integrity", what);
+		CHECK(lastDone == archive.size(), "%s: integrity progress %llu", what, (unsigned long long)lastDone);
 		delete r;
+		// One flipped byte anywhere (stored block, compressed block or tables) must be caught.
+		for (size_t at : { (size_t)100, archive.size() / 2, archive.size() - 300 })
+		{
+			std::vector<uint8_t> bad = archive;
+			bad[at] ^= 0x40;
+			ZArchiveReader* br = ZArchiveReader::OpenFromMemory(bad.data(), bad.size());
+			CHECK(!br || !br->VerifyIntegrity(), "%s: corruption at %zu not caught", what, at);
+			delete br;
+		}
 		// the owning overload
 		std::vector<uint8_t> copy = archive;
 		r = ZArchiveReader::OpenFromMemory(std::move(copy));

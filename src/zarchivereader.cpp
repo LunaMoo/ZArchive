@@ -1,11 +1,13 @@
 #include "zarchive/zarchivereader.h"
 #include "zarchive/zarchivecommon.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <streambuf>
 
 #include <zstd.h>
+#include "sha_256.h"
 #include <cassert>
 
 static uint64_t _istream_getFileSize(std::istream& stream)
@@ -426,6 +428,42 @@ bool ZArchiveReader::LoadBlock(CacheBlock* block)
 	// decompress
 	size_t outputSize = ZSTD_decompress(block->data, _ZARCHIVE::COMPRESSED_BLOCK_SIZE, m_blockDecompressionBuffer.data(), compressedSize);
 	return outputSize == _ZARCHIVE::COMPRESSED_BLOCK_SIZE;
+}
+
+bool ZArchiveReader::VerifyIntegrity(const std::function<bool(uint64_t, uint64_t)>& progress)
+{
+	std::lock_guard<std::mutex> lock(m_accessMutex);
+	const uint64_t fileSize = _istream_getFileSize(*m_stream);
+	if (fileSize < sizeof(_ZARCHIVE::Footer))
+		return false;
+	const uint64_t dataSize = fileSize - sizeof(_ZARCHIVE::Footer);
+	// The footer as stored (big endian), with its hash taken out and zeroed for hashing.
+	_ZARCHIVE::Footer stored;
+	if (!_istream_readBytes(*m_stream, dataSize, &stored, sizeof(stored)))
+		return false;
+	uint8_t expected[32];
+	memcpy(expected, stored.integrityHash, 32);
+	memset(stored.integrityHash, 0, 32);
+
+	uint8_t actual[32];
+	struct Sha_256 sha;
+	sha_256_init(&sha, actual);
+	std::vector<uint8_t> buffer(1024 * 1024);
+	for (uint64_t pos = 0; pos < dataSize;)
+	{
+		const uint32_t n = (uint32_t)std::min<uint64_t>(buffer.size(), dataSize - pos);
+		if (!_istream_readBytes(*m_stream, pos, buffer.data(), n))
+			return false;
+		sha_256_write(&sha, buffer.data(), n);
+		pos += n;
+		if (progress && !progress(pos, fileSize))
+			return false;
+	}
+	sha_256_write(&sha, &stored, sizeof(stored));
+	sha_256_close(&sha);
+	if (progress)
+		progress(fileSize, fileSize);
+	return memcmp(actual, expected, 32) == 0;
 }
 
 // returns empty view on failure
